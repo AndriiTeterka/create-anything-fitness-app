@@ -1,9 +1,14 @@
-// Avoid deep import: ExceptionsManager can be noisy in dev; removing deep import to silence warning
-
+// Avoid deep import: make sure ExceptionsManager exists before attempting to override in dev
 if (__DEV__) {
-  ExceptionsManager.handleException = (error, isFatal) => {
-    // no-op
-  };
+  const maybeExceptionsManager: any = (globalThis as any)?.ExceptionsManager;
+  if (
+    maybeExceptionsManager &&
+    typeof maybeExceptionsManager.handleException === 'function'
+  ) {
+    maybeExceptionsManager.handleException = (_error: unknown, _isFatal?: boolean) => {
+      // no-op in dev to reduce noise
+    };
+  }
 }
 
 import 'react-native-url-polyfill/auto';

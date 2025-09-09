@@ -5,13 +5,14 @@ import {
   ScrollView,
   TouchableOpacity,
   RefreshControl,
+  Modal,
   useColorScheme,
 } from "react-native";
 import { StatusBar } from "expo-status-bar";
 import { useRouter } from "expo-router";
 import {
   Brain,
-  Calendar,
+  Calendar as CalendarIcon,
   Play,
   Target,
   Flame,
@@ -21,6 +22,8 @@ import {
   Dumbbell,
   Apple,
 } from "lucide-react-native";
+import { Calendar as RNCalendar } from "react-native-calendars";
+import { useScheduleStore } from "../../utils/schedule/store";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import {
   useFonts,
@@ -38,6 +41,18 @@ export default function Home() {
   const [aiWorkout, setAiWorkout] = useState(null);
   const [nutritionRecommendation, setNutritionRecommendation] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [calendarVisible, setCalendarVisible] = useState(false);
+  const selectedDate = useScheduleStore((s) => s.selectedDate);
+  const setSelectedDate = useScheduleStore((s) => s.setSelectedDate);
+  const eventsByDate = useScheduleStore((s) => s.eventsByDate);
+  const seedDemoData = useScheduleStore((s) => s.seedDemoData);
+  const hydrated = useScheduleStore((s) => s.hydrated);
+
+  useEffect(() => {
+    if (hydrated && (!eventsByDate || Object.keys(eventsByDate).length === 0)) {
+      seedDemoData();
+    }
+  }, [hydrated]);
 
   const [fontsLoaded] = useFonts({
     PlusJakartaSans_400Regular,
@@ -160,11 +175,204 @@ export default function Home() {
                 padding: 12,
               }}
               activeOpacity={0.8}
+              onPress={() => setCalendarVisible(true)}
             >
-              <Calendar size={24} color="#000000" strokeWidth={2} />
+              <CalendarIcon size={24} color="#000000" strokeWidth={2} />
             </TouchableOpacity>
           </View>
         </View>
+
+        {/* Calendar Modal */}
+        <Modal
+          visible={calendarVisible}
+          animationType="slide"
+          onRequestClose={() => setCalendarVisible(false)}
+          transparent
+        >
+          <View
+            style={{
+              flex: 1,
+              backgroundColor: "rgba(0,0,0,0.5)",
+              justifyContent: "flex-end",
+            }}
+          >
+            <View
+              style={{
+                backgroundColor: isDark ? "#121212" : "#FFFFFF",
+                borderTopLeftRadius: 24,
+                borderTopRightRadius: 24,
+                paddingBottom: insets.bottom + 16,
+              }}
+            >
+              {/* Modal Header */}
+              <View
+                style={{
+                  paddingHorizontal: 24,
+                  paddingTop: 16,
+                  paddingBottom: 8,
+                  flexDirection: "row",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                }}
+              >
+                <Text
+                  style={{
+                    fontFamily: "PlusJakartaSans_600SemiBold",
+                    fontSize: 18,
+                    color: isDark ? "#FFFFFF" : "#000000",
+                  }}
+                >
+                  Schedule
+                </Text>
+                <TouchableOpacity
+                  onPress={() => setCalendarVisible(false)}
+                  style={{ padding: 8 }}
+                  accessibilityLabel="Close calendar"
+                >
+                  <Text
+                    style={{
+                      fontFamily: "PlusJakartaSans_500Medium",
+                      color: "#FFD700",
+                      fontSize: 16,
+                    }}
+                  >
+                    Close
+                  </Text>
+                </TouchableOpacity>
+              </View>
+
+              {/* Calendar */}
+              <View style={{ paddingHorizontal: 16 }}>
+                <RNCalendar
+                  onDayPress={(day) => setSelectedDate(day.dateString)}
+                  markedDates={(() => {
+                    const marks = {};
+                    Object.keys(eventsByDate || {}).forEach((d) => {
+                      marks[d] = {
+                        ...(marks[d] || {}),
+                        marked: true,
+                        dotColor: "#FFD700",
+                      };
+                    });
+                    if (selectedDate) {
+                      marks[selectedDate] = {
+                        ...(marks[selectedDate] || {}),
+                        selected: true,
+                        selectedColor: "#FFD700",
+                        selectedTextColor: "#000000",
+                      };
+                    }
+                    return marks;
+                  })()}
+                  theme={{
+                    backgroundColor: isDark ? "#121212" : "#FFFFFF",
+                    calendarBackground: isDark ? "#1A1A1A" : "#FFFFFF",
+                    textSectionTitleColor: isDark ? "#BBBBBB" : "#666666",
+                    dayTextColor: isDark ? "#FFFFFF" : "#000000",
+                    monthTextColor: isDark ? "#FFFFFF" : "#000000",
+                    todayTextColor: "#FFD700",
+                    selectedDayBackgroundColor: "#FFD700",
+                    selectedDayTextColor: "#000000",
+                    arrowColor: "#FFD700",
+                    todayBackgroundColor: isDark ? "#1E1E1E" : "#FFF7CC",
+                  }}
+                  style={{
+                    borderRadius: 16,
+                    overflow: "hidden",
+                    borderWidth: 1,
+                    borderColor: isDark ? "#2A2A2A" : "#EFEFEF",
+                  }}
+                  enableSwipeMonths
+                  firstDay={1}
+                />
+              </View>
+
+              {/* Day Items */}
+              <View style={{ paddingHorizontal: 24, paddingTop: 12 }}>
+                <Text
+                  style={{
+                    fontFamily: "PlusJakartaSans_500Medium",
+                    fontSize: 14,
+                    color: isDark ? "#BBBBBB" : "#666666",
+                    marginBottom: 8,
+                  }}
+                >
+                  {new Date(selectedDate + "T00:00:00").toLocaleDateString(undefined, {
+                    weekday: "short",
+                    month: "short",
+                    day: "numeric",
+                  })}
+                </Text>
+                {(eventsByDate[selectedDate] || []).length === 0 ? (
+                  <Text
+                    style={{
+                      fontFamily: "PlusJakartaSans_400Regular",
+                      fontSize: 16,
+                      color: isDark ? "#888888" : "#999999",
+                      paddingBottom: 8,
+                    }}
+                  >
+                    No workouts scheduled.
+                  </Text>
+                ) : (
+                  <View style={{ gap: 12, paddingBottom: 8 }}>
+                    {(eventsByDate[selectedDate] || []).map((item) => (
+                      <TouchableOpacity
+                        key={item.id}
+                        onPress={() => router.push(`/workout-details/${item.id}`)}
+                        activeOpacity={0.85}
+                        style={{
+                          backgroundColor: isDark ? "#1A1A1A" : "#FFFFFF",
+                          borderRadius: 16,
+                          padding: 16,
+                          borderWidth: 1,
+                          borderColor: isDark ? "#2A2A2A" : "#EFEFEF",
+                          flexDirection: "row",
+                          alignItems: "center",
+                          justifyContent: "space-between",
+                        }}
+                      >
+                        <View style={{ flexDirection: "row", alignItems: "center" }}>
+                          <View
+                            style={{
+                              backgroundColor: "#FFD700",
+                              borderRadius: 12,
+                              padding: 8,
+                              marginRight: 12,
+                            }}
+                          >
+                            <Dumbbell size={20} color="#000000" strokeWidth={2} />
+                          </View>
+                          <View>
+                            <Text
+                              style={{
+                                fontFamily: "PlusJakartaSans_600SemiBold",
+                                fontSize: 16,
+                                color: isDark ? "#FFFFFF" : "#000000",
+                              }}
+                            >
+                              {item.title}
+                            </Text>
+                            <Text
+                              style={{
+                                fontFamily: "PlusJakartaSans_400Regular",
+                                fontSize: 13,
+                                color: isDark ? "#BBBBBB" : "#666666",
+                              }}
+                            >
+                              {item.time} • {item.duration}
+                            </Text>
+                          </View>
+                        </View>
+                        <ChevronRight size={20} color={isDark ? "#999999" : "#666666"} strokeWidth={2} />
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                )}
+              </View>
+            </View>
+          </View>
+        </Modal>
 
         {/* AI Workout Recommendation */}
         <View style={{ paddingHorizontal: 24, marginBottom: 24 }}>
