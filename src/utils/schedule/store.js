@@ -5,9 +5,13 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 const dateKey = (date) =>
   typeof date === 'string' ? date : new Date(date).toISOString().split('T')[0];
 
+let __setStateRef;
+
 export const useScheduleStore = create(
   persist(
-    (set, get) => ({
+    (set, get) => {
+      __setStateRef = set;
+      return ({
       selectedDate: dateKey(new Date()),
       eventsByDate: {},
       hydrated: false,
@@ -56,7 +60,8 @@ export const useScheduleStore = create(
 
         set({ eventsByDate: schedule });
       },
-    }),
+    });
+    },
     {
       name: 'schedule-store-v1',
       storage: createJSONStorage(() => AsyncStorage),
@@ -64,9 +69,11 @@ export const useScheduleStore = create(
         selectedDate: state.selectedDate,
         eventsByDate: state.eventsByDate,
       }),
-      onRehydrateStorage: () => (state, error) => {
-        // Mark hydration complete so the UI can seed or render
-        set({ hydrated: true });
+      onRehydrateStorage: () => (_state, _error) => {
+        // Called after hydration completes or errors
+        try {
+          __setStateRef?.({ hydrated: true });
+        } catch {}
       },
     }
   )

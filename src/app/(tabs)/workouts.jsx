@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useMemo, useRef, useState, useCallback, memo } from "react";
 import {
   View,
   Text,
@@ -6,6 +6,8 @@ import {
   TouchableOpacity,
   FlatList,
   useColorScheme,
+  Animated,
+  Platform,
 } from "react-native";
 import { StatusBar } from "expo-status-bar";
 import { useRouter } from "expo-router";
@@ -29,110 +31,157 @@ import {
   PlusJakartaSans_500Medium,
   PlusJakartaSans_600SemiBold,
 } from "@expo-google-fonts/plus-jakarta-sans";
+import { useWorkoutsUIStore, FILTERS } from "../../utils/workouts/uiStore";
+import {
+  fetchAIRecommended,
+  fetchMyWorkouts,
+  fetchRecentWorkouts,
+  fetchWorkoutCounts,
+  DIFFICULTY_COLORS,
+} from "../../utils/workouts/data";
 
 export default function Workouts() {
   const router = useRouter();
   const colorScheme = useColorScheme();
   const isDark = colorScheme === "dark";
   const insets = useSafeAreaInsets();
-  const [selectedCategory, setSelectedCategory] = useState("All");
+  const activeFilter = useWorkoutsUIStore((s) => s.activeFilter);
+  const setActiveFilter = useWorkoutsUIStore((s) => s.setActiveFilter);
+  const [loading, setLoading] = useState(true);
+  const [items, setItems] = useState([]);
+  const [counts, setCounts] = useState({ my: 0, recent: 0, ai: 0 });
+  const fade = useRef(new Animated.Value(0)).current;
+  const requestIdRef = useRef(0);
+  const [isSwitching, setIsSwitching] = useState(true); // hide list until first load completes
+  const firstLoadRef = useRef(true);
+  const listRef = useRef(null);
+  const CARD_TOTAL_HEIGHT = 184; // approx card height + spacing for getItemLayout
 
   const [fontsLoaded] = useFonts({
     PlusJakartaSans_400Regular,
     PlusJakartaSans_500Medium,
     PlusJakartaSans_600SemiBold,
   });
+  const getDifficultyColor = (difficulty) => DIFFICULTY_COLORS[difficulty] || (isDark ? "#6B7280" : "#6B7280");
 
-  const categories = ["All", "Strength", "Cardio", "Flexibility", "HIIT"];
+  const filters = useMemo(
+    () => [
+      { key: FILTERS.MY, label: "My Workouts", count: counts.my },
+      { key: FILTERS.RECENT, label: "Recent", count: counts.recent },
+      { key: FILTERS.AI, label: "AI Picks", count: counts.ai },
+    ],
+    [counts]
+  );
 
-  const workouts = [
-    {
-      id: 1,
-      title: "Upper Body Blast",
-      type: "AI Recommended",
-      duration: "45 min",
-      exercises: 8,
-      difficulty: "Intermediate",
-      category: "Strength",
-      description: "Personalized upper body strength workout",
-      isAI: true,
-    },
-    {
-      id: 2,
-      title: "Morning Cardio",
-      type: "Popular",
-      duration: "30 min",
-      exercises: 6,
-      difficulty: "Beginner",
-      category: "Cardio",
-      description: "High-energy cardio to start your day",
-      isAI: false,
-    },
-    {
-      id: 3,
-      title: "Full Body HIIT",
-      type: "Featured",
-      duration: "25 min",
-      exercises: 10,
-      difficulty: "Advanced",
-      category: "HIIT",
-      description: "Intense full-body interval training",
-      isAI: false,
-    },
-    {
-      id: 4,
-      title: "Flexibility Flow",
-      type: "AI Recommended",
-      duration: "20 min",
-      exercises: 12,
-      difficulty: "Beginner",
-      category: "Flexibility",
-      description: "AI-adapted stretching routine for your needs",
-      isAI: true,
-    },
-    {
-      id: 5,
-      title: "Lower Body Power",
-      type: "Popular",
-      duration: "40 min",
-      exercises: 9,
-      difficulty: "Intermediate",
-      category: "Strength",
-      description: "Build lower body strength and power",
-      isAI: false,
-    },
-  ];
-
-  const filteredWorkouts = selectedCategory === "All" 
-    ? workouts 
-    : workouts.filter(workout => workout.category === selectedCategory);
-
-  const getDifficultyColor = (difficulty) => {
-    switch (difficulty) {
-      case "Beginner":
-        return "#10B981";
-      case "Intermediate":
-        return "#FFD700";
-      case "Advanced":
-        return "#EF4444";
-      default:
-        return "#6B7280";
+  const loadCounts = async () => {
+    try {
+      const c = await fetchWorkoutCounts();
+      setCounts(c);
+    } catch (e) {
+      // ignore for now
     }
   };
 
-  const WorkoutCard = ({ workout }) => (
-    <TouchableOpacity
-      style={{
-        backgroundColor: isDark ? "#1A1A1A" : "#FFFFFF",
-        borderRadius: 20,
-        padding: 20,
-        marginBottom: 16,
-        borderWidth: workout.isAI ? 2 : 0,
-        borderColor: workout.isAI ? "#FFD700" : "transparent",
-      }}
-      activeOpacity={0.8}
-      onPress={() => router.push(`/workout-details/${workout.id}`)}
-    >
+  const loadItems = async (filter) => {
+    const reqId = ++requestIdRef.current;
+    setIsSwitching(true);
+    // Immediately hide current list to prevent previous content flashing
+    fade.stopAnimation();
+    fade.setValue(0);
+    // Keep previous items until swap to reduce visible state churn
+    // Ensure list is at top for new dataset
+    try { listRef.current?.scrollToOffset({ offset: 0, animated: false }); } catch {}
+    // Start fetch in parallel with fade-out
+    const fetchPromise = (async () => {
+      let data = [];
+      if (filter === FILTERS.MY) data = await fetchMyWorkouts();
+      else if (filter === FILTERS.RECENT) data = await fetchRecentWorkouts({ withinDays: 30 });
+      else data = await fetchAIRecommended();
+      return data;
+    })();
+
+    const fadeTo = (toValue, duration) =>
+      new Promise((resolve) =>
+        Animated.timing(fade, { toValue, duration, useNativeDriver: true }).start(() => resolve())
+      );
+
+    try {
+      await fadeTo(0, 0); // already hidden; ensure value locked
+      const data = await fetchPromise; // wait for new data
+      if (reqId !== requestIdRef.current) return; // stale request, ignore
+      setItems(data); // swap while invisible
+      setIsSwitching(false); // mount new list
+      if (firstLoadRef.current) {
+        // first load: avoid any perceived flicker by setting instantly
+        fade.setValue(1);
+        firstLoadRef.current = false;
+      } else {
+        await fadeTo(1, 180); // fade back in with new list
+      }
+    } catch (e) {
+      if (reqId !== requestIdRef.current) return;
+      // keep current items but restore opacity
+      setIsSwitching(false);
+      await fadeTo(1, 120);
+    } finally {
+      if (reqId === requestIdRef.current) setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadCounts();
+  }, []);
+
+  useEffect(() => {
+    if (fontsLoaded) {
+      loadItems(activeFilter);
+    }
+  }, [activeFilter, fontsLoaded]);
+
+  const WorkoutCard = ({ workout, index = 0 }) => {
+    const appear = useRef(new Animated.Value(0)).current;
+    useEffect(() => {
+      if (index > 5) {
+        // Render below-the-fold items immediately to keep FPS high
+        appear.setValue(1);
+        return;
+      }
+      appear.setValue(0);
+      Animated.spring(appear, {
+        toValue: 1,
+        useNativeDriver: true,
+        friction: 8,
+        tension: 80,
+        delay: Math.min(index, 5) * 30,
+      }).start();
+    }, [workout?.id]);
+
+    const translateY = appear.interpolate({ inputRange: [0, 1], outputRange: [10, 0] });
+    const scale = appear.interpolate({ inputRange: [0, 1], outputRange: [0.99, 1] });
+
+    return (
+      <Animated.View
+        renderToHardwareTextureAndroid
+        shouldRasterizeIOS
+        style={{ opacity: appear, transform: [{ translateY }, { scale }] }}
+      >
+        <TouchableOpacity
+          style={{
+            backgroundColor: isDark ? "#1A1A1A" : "#FFFFFF",
+            borderRadius: 20,
+            padding: 20,
+            marginBottom: 16,
+            borderWidth: workout.isAI ? 2 : 1,
+            borderColor: workout.isAI ? "#FFD700" : (isDark ? "#1F1F1F" : "#EAEAEA"),
+            shadowColor: "#000",
+            shadowOpacity: Platform.OS === 'ios' ? 0.12 : 0,
+            shadowRadius: 6,
+            shadowOffset: { width: 0, height: 4 },
+            elevation: 1,
+          }}
+          activeOpacity={0.8}
+          onPress={() => router.push(`/workout-details/${workout.id}`)}
+        >
       <View style={{ flexDirection: "row", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 12 }}>
         <View style={{ flex: 1 }}>
           <View style={{ flexDirection: "row", alignItems: "center", marginBottom: 8 }}>
@@ -164,13 +213,13 @@ export default function Workouts() {
                 color: isDark ? "#999999" : "#666666",
               }}
             >
-              {workout.type}
+              {workout.type || (workout.isAI ? "AI Recommended" : "Workout")}
             </Text>
           </View>
           <Text
             style={{
               fontFamily: "PlusJakartaSans_600SemiBold",
-              fontSize: 18,
+              fontSize: 20,
               color: isDark ? "#FFFFFF" : "#000000",
               marginBottom: 4,
             }}
@@ -180,7 +229,7 @@ export default function Workouts() {
           <Text
             style={{
               fontFamily: "PlusJakartaSans_400Regular",
-              fontSize: 14,
+              fontSize: 13,
               color: isDark ? "#CCCCCC" : "#666666",
               marginBottom: 12,
             }}
@@ -241,8 +290,16 @@ export default function Workouts() {
           </Text>
         </View>
       </View>
-    </TouchableOpacity>
-  );
+        </TouchableOpacity>
+      </Animated.View>
+    );
+  };
+
+  const MemoWorkoutCard = memo(WorkoutCard);
+  const renderItem = useCallback(({ item, index }) => (
+    <MemoWorkoutCard workout={item} index={index} />
+  ), [isDark]);
+  const keyExtractor = useCallback((item) => String(item.id), []);
 
   if (!fontsLoaded) {
     return null;
@@ -275,6 +332,11 @@ export default function Workouts() {
               backgroundColor: "#FFD700",
               borderRadius: 20,
               padding: 12,
+              shadowColor: "#000",
+              shadowOpacity: 0.25,
+              shadowRadius: 8,
+              shadowOffset: { width: 0, height: 4 },
+              elevation: 4,
             }}
             activeOpacity={0.8}
             onPress={() => router.push("/workout-builder")}
@@ -285,7 +347,7 @@ export default function Workouts() {
       </View>
 
       {/* Search and Filter */}
-      <View style={{ paddingHorizontal: 24, marginBottom: 20 }}>
+      <View style={{ paddingHorizontal: 24, marginBottom: 16 }}>
         <View style={{ flexDirection: "row", gap: 12 }}>
           <TouchableOpacity
             style={{
@@ -293,6 +355,8 @@ export default function Workouts() {
               backgroundColor: isDark ? "#1A1A1A" : "#FFFFFF",
               borderRadius: 16,
               padding: 16,
+              borderWidth: 1,
+              borderColor: isDark ? "#2A2A2A" : "#EAEAEA",
               flexDirection: "row",
               alignItems: "center",
             }}
@@ -315,6 +379,8 @@ export default function Workouts() {
               backgroundColor: isDark ? "#1A1A1A" : "#FFFFFF",
               borderRadius: 16,
               padding: 16,
+              borderWidth: 1,
+              borderColor: isDark ? "#2A2A2A" : "#EAEAEA",
             }}
             activeOpacity={0.8}
           >
@@ -323,79 +389,121 @@ export default function Workouts() {
         </View>
       </View>
 
-      {/* Category Pills */}
-      <View style={{ paddingLeft: 24, marginBottom: 24 }}>
-        <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-          <View style={{ flexDirection: "row", gap: 12, paddingRight: 24 }}>
-            {categories.map((category) => (
+      {/* Filters Tabs */}
+      <View style={{ paddingHorizontal: 24, marginBottom: 8 }}>
+        <View style={{ flexDirection: "row", justifyContent: "space-between", gap: 8 }}>
+          {filters.map((f) => {
+            const selected = activeFilter === f.key;
+            return (
               <TouchableOpacity
-                key={category}
-                style={{
-                  backgroundColor: selectedCategory === category ? "#FFD700" : (isDark ? "#1A1A1A" : "#FFFFFF"),
-                  borderRadius: 20,
-                  paddingHorizontal: 20,
-                  paddingVertical: 12,
-                }}
+                key={f.key}
+                onPress={() => setActiveFilter(f.key)}
                 activeOpacity={0.8}
-                onPress={() => setSelectedCategory(category)}
+                accessibilityRole="tab"
+                accessibilityState={{ selected }}
+                accessibilityLabel={f.label}
+                style={{
+                  flex: 1,
+                  backgroundColor: selected ? "#FFD700" : isDark ? "#1A1A1A" : "#FFFFFF",
+                  borderRadius: 16,
+                  paddingVertical: 12,
+                  paddingHorizontal: 12,
+                  alignItems: "center",
+                  flexDirection: "row",
+                  justifyContent: "center",
+                  gap: 6,
+                  borderWidth: selected ? 0 : 1,
+                  borderColor: isDark ? "#2A2A2A" : "#EAEAEA",
+                }}
               >
                 <Text
                   style={{
-                    fontFamily: "PlusJakartaSans_500Medium",
+                    fontFamily: "PlusJakartaSans_600SemiBold",
                     fontSize: 14,
-                    color: selectedCategory === category ? "#000000" : (isDark ? "#FFFFFF" : "#000000"),
+                    color: selected ? "#000000" : isDark ? "#FFFFFF" : "#000000",
+                    flexShrink: 1,
+                  }}
+                  numberOfLines={1}
+                  ellipsizeMode="tail"
+                >
+                  {f.label}
+                </Text>
+                <View
+                  style={{
+                    minWidth: 24,
+                    paddingHorizontal: 6,
+                    paddingVertical: 2,
+                    borderRadius: 12,
+                    backgroundColor: selected ? "#000000" : isDark ? "#2A2A2A" : "#F0F0F0",
+                    alignItems: "center",
                   }}
                 >
-                  {category}
-                </Text>
+                  <Text
+                    style={{
+                      fontFamily: "PlusJakartaSans_500Medium",
+                      fontSize: 12,
+                      color: selected ? "#FFD700" : isDark ? "#FFFFFF" : "#000000",
+                    }}
+                  >
+                    {f.count}
+                  </Text>
+                </View>
               </TouchableOpacity>
-            ))}
-          </View>
-        </ScrollView>
+            );
+          })}
+        </View>
       </View>
 
       {/* Workout List */}
-      <ScrollView
-        style={{ flex: 1 }}
-        contentContainerStyle={{ paddingHorizontal: 24, paddingBottom: insets.bottom + 100 }}
-        showsVerticalScrollIndicator={false}
-      >
-        {filteredWorkouts.map((workout) => (
-          <WorkoutCard key={workout.id} workout={workout} />
-        ))}
-      </ScrollView>
-
-      {/* Floating Action Button */}
-      <View
-        style={{
-          position: "absolute",
-          bottom: insets.bottom + 20,
-          right: 24,
-        }}
-      >
-        <TouchableOpacity
-          style={{
-            backgroundColor: "#FFD700",
-            borderRadius: 28,
-            width: 56,
-            height: 56,
-            justifyContent: "center",
-            alignItems: "center",
-            shadowColor: "#000",
-            shadowOffset: {
-              width: 0,
-              height: 4,
-            },
-            shadowOpacity: 0.2,
-            shadowRadius: 8,
-            elevation: 8,
-          }}
-          activeOpacity={0.8}
-          onPress={() => router.push("/workout-builder")}
-        >
-          <Plus size={24} color="#000000" strokeWidth={2} />
-        </TouchableOpacity>
-      </View>
+      <Animated.View style={{ flex: 1, opacity: fade }}>
+        {
+          (!isSwitching) && (
+          <FlatList
+            ref={listRef}
+            key={activeFilter}
+            data={items}
+            keyExtractor={keyExtractor}
+            contentContainerStyle={{ paddingHorizontal: 24, paddingBottom: insets.bottom + 140 }}
+            showsVerticalScrollIndicator={false}
+            initialNumToRender={5}
+            maxToRenderPerBatch={4}
+            updateCellsBatchingPeriod={80}
+            windowSize={6}
+            removeClippedSubviews={true}
+            renderItem={renderItem}
+            getItemLayout={(data, index) => ({ length: CARD_TOTAL_HEIGHT, offset: CARD_TOTAL_HEIGHT * index, index })}
+            ListEmptyComponent={() => (
+              <View style={{ paddingTop: 40, alignItems: 'center' }}>
+                <Text
+                  style={{
+                    fontFamily: 'PlusJakartaSans_600SemiBold',
+                    fontSize: 18,
+                    color: isDark ? '#FFFFFF' : '#000000',
+                  }}
+                >
+                  No workouts here yet
+                </Text>
+                <Text
+                  style={{
+                    fontFamily: 'PlusJakartaSans_400Regular',
+                    fontSize: 14,
+                    color: isDark ? '#CCCCCC' : '#666666',
+                    marginTop: 8,
+                    textAlign: 'center',
+                    paddingHorizontal: 24,
+                  }}
+                >
+                  {activeFilter === FILTERS.MY
+                    ? 'Create or save workouts to see them here.'
+                    : activeFilter === FILTERS.RECENT
+                    ? 'Your recently accessed workouts will appear here.'
+                    : 'AI recommendations will appear here based on your activity.'}
+                </Text>
+              </View>
+            )}
+          />)
+        }
+      </Animated.View>
     </View>
   );
 }

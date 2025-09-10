@@ -29,6 +29,9 @@ import {
   PlusJakartaSans_500Medium,
   PlusJakartaSans_600SemiBold,
 } from "@expo-google-fonts/plus-jakarta-sans";
+import { getWorkoutById as getWorkoutFromData } from "../../utils/workouts/data";
+import { useWorkoutsStore } from "../../utils/workouts/store";
+import useUser from "../../utils/auth/useUser";
 
 export default function WorkoutDetails() {
   const router = useRouter();
@@ -39,6 +42,7 @@ export default function WorkoutDetails() {
   const [workout, setWorkout] = useState(null);
   const [loading, setLoading] = useState(true);
   const [isBookmarked, setIsBookmarked] = useState(false);
+  const { user } = useUser();
 
   const [fontsLoaded] = useFonts({
     PlusJakartaSans_400Regular,
@@ -52,8 +56,15 @@ export default function WorkoutDetails() {
 
   const fetchWorkoutDetails = async () => {
     try {
-      const workoutDetails = getWorkoutById(id);
+      const fromData = getWorkoutFromData(id);
+      const workoutDetails = fromData || getStaticWorkoutById(id);
       setWorkout(workoutDetails);
+      // record recent access
+      try {
+        const userKeyFor = useWorkoutsStore.getState().userKeyFor;
+        const recordAccess = useWorkoutsStore.getState().recordAccess;
+        recordAccess(userKeyFor(user), id);
+      } catch {}
     } catch (error) {
       console.error("Error fetching workout details:", error);
     } finally {
@@ -61,7 +72,7 @@ export default function WorkoutDetails() {
     }
   };
 
-  const getWorkoutById = (workoutId) => {
+  const getStaticWorkoutById = (workoutId) => {
     const workouts = {
       1: {
         id: 1,
@@ -265,6 +276,16 @@ export default function WorkoutDetails() {
 
     return workouts[workoutId] || workouts[1];
   };
+
+  // Normalize exercises data from different sources
+  const exercisesList = Array.isArray(workout?.exercises)
+    ? workout.exercises
+    : [];
+  const exercisesCount = Array.isArray(workout?.exercises)
+    ? workout.exercises.length
+    : typeof workout?.exercises === "number"
+    ? workout.exercises
+    : 0;
 
   const getDifficultyColor = (difficulty) => {
     switch (difficulty) {
@@ -905,11 +926,10 @@ export default function WorkoutDetails() {
             marginBottom: 16,
           }}
         >
-          Exercises ({workout.exercises?.length || 0})
+          Exercises ({exercisesCount})
         </Text>
-
-        {workout.exercises?.map((exercise, index) => (
-          <ExerciseCard key={exercise.id} exercise={exercise} index={index} />
+        {exercisesList.map((exercise, index) => (
+          <ExerciseCard key={exercise.id ?? index} exercise={exercise} index={index} />
         ))}
       </ScrollView>
 

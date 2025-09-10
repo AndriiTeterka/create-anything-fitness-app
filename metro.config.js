@@ -51,6 +51,19 @@ config.resolver.resolveRequest = (context, moduleName, platform) => {
   }
 };
 
+// Silence Hermes "InternalBytecode.js" frames that cause ENOENT during symbolication
+config.symbolicator = {
+  customizeFrame: async (frame) => {
+    try {
+      const file = frame?.file;
+      if (typeof file === 'string' && file.includes('InternalBytecode.js')) {
+        return { collapse: true, file: null };
+      }
+    } catch {}
+    return {};
+  },
+};
+
 const cacheDir = path.join(__dirname, 'caches');
 
 config.cacheStores = () => [
